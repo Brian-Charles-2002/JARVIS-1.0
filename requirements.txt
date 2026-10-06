@@ -1,0 +1,44 @@
+# ============================================================
+# JARVIS dependencies
+# Install:  pip install -r requirements.txt
+# Heavy / hardware-dependent packages (Whisper, Playwright,
+# PyAutoGUI, sounddevice) are optional for TEXT mode and are
+# imported lazily so the assistant still runs without them.
+# See README "Installation" for a minimal core install.
+# ============================================================
+
+# --- AI / reasoning brain (required) ---
+google-genai>=1.0.0
+python-dotenv>=1.0.0
+pydantic>=2.7.0
+
+# --- System / process info (required for tools + safety) ---
+psutil>=5.9.0
+
+# --- Text-to-speech ---
+edge-tts>=6.1.0            # high-quality neural voices (default engine)
+pyttsx3>=2.90              # offline fallback engine
+comtypes>=1.2.0 ; sys_platform == "win32"   # required by pyttsx3 on Windows
+pygame>=2.5.0             # audio playback for edge-tts mp3 output
+
+# --- Speech-to-text (voice mode) ---
+faster-whisper>=1.0.0     # local Whisper transcription
+sounddevice>=0.4.6        # microphone capture
+numpy>=1.24.0
+SpeechRecognition>=3.10.0 # alternative/lighter STT backend
+
+# --- Windows automation (tools) ---
+PyAutoGUI>=0.9.54         # keyboard + mouse
+pyperclip>=1.8.2          # clipboard
+PyGetWindow>=0.6.4        # active window info
+send2trash>=1.8.2         # move files to Recycle Bin instead of deleting
+pywin32>=306 ; sys_platform == "win32"    # Windows Shell / known folders
+
+# --- Browser automation (advanced tools) ---
+playwright>=1.44.0        # run `playwright install` after installing
+
+# --- Web search ---
+duckduckgo-search>=6.1.0  # keyless web search backend
+
+# --- Testing ---
+pytest>=8.0.0
