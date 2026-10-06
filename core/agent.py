@@ -152,7 +152,10 @@ class Agent:
     def _commit_calls(self, calls: list[dict], cancelled: bool, token: CancellationToken) -> None:
         """Add the model's function-call turn, execute, then add responses."""
         model_parts = [
-            ChatPart(function_call={"name": c["name"], "args": c["args"], "id": c.get("id")})
+            ChatPart(function_call={
+                "name": c["name"], "args": c["args"], "id": c.get("id"),
+                "thought_signature": c.get("thought_signature"),
+            })
             for c in calls
         ]
         self.conversation.messages.append(ChatMessage(role="model", parts=model_parts))

@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -155,18 +156,42 @@ class ListDirectory(BaseTool):
 
     def run(self, path: str, limit: int = 100) -> ToolResult:
         target = resolve_user_path(path)
-        if not target.is_dir():
-            return ToolResult.fail(self.name, "DIR_NOT_FOUND", f"No directory at {target}")
-        entries = []
-        for child in sorted(target.iterdir()):
-            entries.append({
-                "name": child.name,
-                "is_dir": child.is_dir(),
-                "size_bytes": child.stat().st_size if child.is_file() else None,
-            })
-            if len(entries) >= limit:
-                break
-        return ToolResult.ok(self.name, {"path": str(target), "count": len(entries), "entries": entries})
+        try:
+            if not target.is_dir():
+                return ToolResult.fail(self.name, "DIR_NOT_FOUND", f"No directory at {target}")
+        except OSError as exc:  # noqa: BLE001
+            return ToolResult.fail(self.name, "READ_ERROR", str(exc))
+
+        # Lazy scan: never materialise the whole directory up front, because a
+        # huge or OneDrive-synced folder would block the assistant. Bound the
+        # work by both ``limit`` and a short wall-clock budget.
+        limit = max(1, min(int(limit or 100), 2000))
+        budget = time.monotonic() + 3.0
+        entries: list[dict[str, Any]] = []
+        truncated = False
+        try:
+            with os.scandir(target) as it:
+                for child in it:
+                    try:
+                        is_dir = child.is_dir(follow_symlinks=False)
+                        size = None if is_dir else child.stat(follow_symlinks=False).st_size
+                    except OSError:  # unreadable/cloud placeholder entry
+                        is_dir, size = False, None
+                    entries.append({"name": child.name, "is_dir": is_dir, "size_bytes": size})
+                    if len(entries) >= limit:
+                        truncated = True
+                        break
+                    if time.monotonic() > budget:
+                        truncated = True
+                        break
+        except OSError as exc:  # noqa: BLE001
+            return ToolResult.fail(self.name, "READ_ERROR", str(exc))
+
+        entries.sort(key=lambda e: e["name"].lower())
+        return ToolResult.ok(self.name, {
+            "path": str(target), "count": len(entries),
+            "entries": entries, "truncated": truncated,
+        })
 
 
 class CopyFile(BaseTool):

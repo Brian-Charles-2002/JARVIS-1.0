@@ -19,11 +19,45 @@ _PROTECTED = {
 }
 
 
-def _launch(command: str) -> subprocess.Popen:
-    """Launch a command detached from JARVIS's own lifecycle."""
-    if command.endswith(".lnk"):
+def _split_args(args: str) -> list[str]:
+    """Split an args string into argv tokens, honoring quotes and backslashes."""
+    args = (args or "").strip()
+    if not args:
+        return []
+    try:
+        import shlex
+
+        tokens = shlex.split(args, posix=False)
+    except ValueError:
+        tokens = args.split()
+    return [t.strip('"') for t in tokens if t]
+
+
+def _launch(target: str, args: str = "") -> subprocess.Popen:
+    """Launch an app detached from JARVIS's own lifecycle.
+
+    A real executable path that contains spaces (``C:\\Program Files\\...``)
+    must be passed as its own argv token, not glued into one shell string, or
+    ``cmd`` splits it at the first space and fails. Bare commands and the
+    ``start``/``ms-settings:`` forms still need a shell.
+    """
+    tokens = _split_args(args)
+
+    if target.endswith(".lnk"):
         # Open a Start Menu shortcut via Shell
-        return subprocess.Popen(["cmd", "/c", "start", "", command], close_fds=True)
+        cmd = ["cmd", "/c", "start", "", target] + tokens
+        return subprocess.Popen(cmd, close_fds=True)
+
+    # Existing executable file: launch via argv so Python quotes the path right.
+    try:
+        is_exe = Path(target).is_file()
+    except OSError:
+        is_exe = False
+    if is_exe:
+        return subprocess.Popen([target] + tokens, close_fds=True)
+
+    # Otherwise run through the shell (e.g. "notepad", "calc", "start ms-settings:").
+    command = target if not args else f"{target} {args}"
     return subprocess.Popen(command, shell=True, close_fds=True)
 
 
@@ -47,9 +81,8 @@ class OpenApplication(BaseTool):
                 self.name, "APPLICATION_NOT_FOUND",
                 f"Could not locate '{name}' installed on this computer.",
             )
-        command = target if not args else f"{target} {args}"
         try:
-            proc = _launch(command)
+            proc = _launch(target, args)
         except Exception as exc:  # noqa: BLE001
             return ToolResult.fail(self.name, "LAUNCH_FAILED", str(exc))
         # Verify a process is running shortly after launch (best effort).
@@ -57,7 +90,7 @@ class OpenApplication(BaseTool):
         alive = proc.poll() is None
         return ToolResult.ok(self.name, {
             "application": name,
-            "command": command,
+            "command": f"{target} {args}".strip(),
             "launched": True,
             "process_alive": alive,
         })

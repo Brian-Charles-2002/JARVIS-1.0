@@ -43,6 +43,30 @@ _KNOWN_COMMANDS = {
 _alias_cache: dict[str, str] | None = None
 _discovery_cache: dict[str, str] = {}
 
+# Spoken app name -> likely executable stem (Windows exe names often differ
+# from what a user says, e.g. "Edge" -> msedge, "VS Code" -> code).
+_NAME_ALIASES: dict[str, list[str]] = {
+    "edge": ["msedge"],
+    "microsoft edge": ["msedge"],
+    "internet explorer": ["iexplore"],
+    "chrome": ["chrome"],
+    "google chrome": ["chrome"],
+    "brave": ["brave"],
+    "firefox": ["firefox"],
+    "opera": ["opera"],
+    "vscode": ["code", "Code"],
+    "vs code": ["code", "Code"],
+    "visual studio code": ["code", "Code"],
+    "word": ["winword"],
+    "excel": ["excel"],
+    "powerpoint": ["powerpnt"],
+    "outlook": ["outlook"],
+    "spotify": ["spotify"],
+    "discord": ["discord"],
+    "terminal": ["wt", "WindowsTerminal"],
+    "windows terminal": ["wt", "WindowsTerminal"],
+}
+
 
 def user_aliases() -> dict[str, str]:
     global _alias_cache
@@ -111,11 +135,13 @@ def discover(name: str) -> str | None:
     if key in _discovery_cache:
         return _discovery_cache[key]
 
-    # 1) explicit aliases
+    # 1) explicit aliases (blank/whitespace values are placeholders: ignore them
+    #    and fall through so a template config never hides a real install)
     aliases = user_aliases()
-    if key in aliases:
-        _discovery_cache[key] = aliases[key]
-        return aliases[key]
+    alias_value = (aliases.get(key) or "").strip()
+    if alias_value:
+        _discovery_cache[key] = alias_value
+        return alias_value
 
     # 2) well-known commands
     if key in _KNOWN_COMMANDS:
@@ -123,37 +149,48 @@ def discover(name: str) -> str | None:
         _discovery_cache[key] = command
         return command
 
-    # 3) PATH lookup (e.g. code, chrome, brave)
-    found = shutil.which(key) or shutil.which(f"{key}.exe")
-    if found:
-        _discovery_cache[key] = found
-        return found
+    # executable-name candidates: the spoken key plus any known exe alias
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for cand in [key, *_NAME_ALIASES.get(key, [])]:
+        if cand and cand not in seen:
+            seen.add(cand)
+            candidates.append(cand)
 
-    # 4) registry App Paths
-    ap = _app_paths(key)
-    if ap and Path(ap).exists():
-        _discovery_cache[key] = ap
-        return ap
+    # 3) PATH lookup, then 4) registry App Paths, for each exe candidate
+    for exe in candidates:
+        found = shutil.which(exe) or shutil.which(f"{exe}.exe")
+        if found:
+            _discovery_cache[key] = found
+            return found
+        ap = _app_paths(exe)
+        if ap and Path(ap).exists():
+            _discovery_cache[key] = ap
+            return ap
 
-    # 5) Start Menu shortcut name match
-    shortcut = _find_shortcut(name)
-    if shortcut:
-        _discovery_cache[key] = str(shortcut)
-        return str(shortcut)
+    # 5) Start Menu shortcut name match (spoken name, then exe candidates)
+    for probe in [name, *candidates]:
+        shortcut = _find_shortcut(probe)
+        if shortcut:
+            _discovery_cache[key] = str(shortcut)
+            return str(shortcut)
 
     # 6) common install directory scan (exename.exe)
     for base in _COMMON_DIRS:
         if not base.exists():
             continue
-        candidate = base / f"{key}.exe"
-        if candidate.exists():
-            _discovery_cache[key] = str(candidate)
-            return str(candidate)
-        for sub in base.glob(f"*/{key}.exe"):
-            _discovery_cache[key] = str(sub)
-            return str(sub)
-        for sub in base.glob(f"**/{key}.exe"):
-            _discovery_cache[key] = str(sub)
-            return str(sub)
+        for exe in candidates:
+            direct = base / f"{exe}.exe"
+            if direct.exists():
+                _discovery_cache[key] = str(direct)
+                return str(direct)
+            one = next(iter(base.glob(f"*/{exe}.exe")), None)
+            if one:
+                _discovery_cache[key] = str(one)
+                return str(one)
+            deep = next(iter(base.glob(f"**/{exe}.exe")), None)
+            if deep:
+                _discovery_cache[key] = str(deep)
+                return str(deep)
 
     return None

@@ -51,19 +51,38 @@ class EdgeTTS(TextToSpeech):
     def _stream(self, text: str) -> bytes:
         import edge_tts  # type: ignore
 
-        async def run() -> bytes:
-            buffer = bytearray()
-            communicate = edge_tts.Communicate(text, self.voice)
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    buffer.extend(chunk["data"])
-            return bytes(buffer)
+        holder: dict[str, bytes] = {"audio": b""}
+        errors: list[BaseException] = []
 
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(run())
-        finally:
-            loop.close()
+        def worker() -> None:
+            async def run() -> bytes:
+                buffer = bytearray()
+                communicate = edge_tts.Communicate(text, self.voice)
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        buffer.extend(chunk["data"])
+                return bytes(buffer)
+
+            # Own thread with a clean loop: the caller's thread may already have
+            # a running asyncio loop (e.g. left by Playwright), which would make
+            # run_until_complete raise "Cannot run the event loop while another
+            # loop is running".
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                holder["audio"] = loop.run_until_complete(run())
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                asyncio.set_event_loop(None)
+                loop.close()
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join()
+        if errors:
+            raise errors[0]
+        return holder["audio"]
 
     def speak(self, text: str) -> None:
         text = (text or "").strip()

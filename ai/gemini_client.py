@@ -77,7 +77,12 @@ class GeminiClient:
                     code = None
                 message = str(exc)
                 lowered = message.lower()
-                if code in (400, 401, 403) and ("api key" in lowered or "permission" in lowered or "authenticat" in lowered or "invalid" in lowered):
+                is_auth = (
+                    code in (401, 403)
+                    or (code == 400 and ("api key" in lowered or "api_key" in lowered
+                                         or "permission" in lowered or "authenticat" in lowered))
+                )
+                if is_auth:
                     raise AuthenticationError(f"Gemini rejected the API key: {_short(message)}") from exc
                 if code == 429 or "rate limit" in lowered or "quota" in lowered:
                     if attempt < attempts - 1:
@@ -157,7 +162,13 @@ def _parse_response(response: types.GenerateContentResponse) -> ModelResponse:
     for part in candidate.content.parts or []:
         if getattr(part, "function_call", None):
             fc = part.function_call
-            calls.append({"name": fc.name, "args": dict(fc.args or {})})
+            call: dict[str, Any] = {"name": fc.name, "args": dict(fc.args or {}), "id": fc.id}
+            # Newer Gemini models attach a thought_signature to function-call
+            # parts; it must be echoed back verbatim or the next request 400s.
+            sig = getattr(part, "thought_signature", None)
+            if sig is not None:
+                call["thought_signature"] = sig
+            calls.append(call)
         elif getattr(part, "text", None):
             texts.append(part.text)
     if calls:

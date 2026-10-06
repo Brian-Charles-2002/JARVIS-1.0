@@ -45,6 +45,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="JARVIS - personal AI desktop assistant")
     parser.add_argument("--text", action="store_true", help="run in text mode (no microphone)")
     parser.add_argument("--voice", action="store_true", help="run in voice mode (default)")
+    parser.add_argument("--gui", action="store_true",
+                        help="show the on-screen assistant window (typing + optional voice)")
     parser.add_argument("--debug", action="store_true", help="enable verbose debug logging")
     parser.add_argument("--no-speak", action="store_true", help="disable text-to-speech")
     return parser.parse_args(argv)
@@ -97,7 +99,9 @@ def main(argv=None) -> int:
 
     print()
     try:
-        if args.text:
+        if args.gui:
+            _run_gui(brain)
+        elif args.text:
             brain.run_text_mode()
         else:
             brain.run_voice_mode()
@@ -107,6 +111,17 @@ def main(argv=None) -> int:
         brain.close()
         logger.info("JARVIS exited.")
     return 0
+
+
+def _run_gui(brain) -> None:
+    """Launch the graphical overlay, falling back to voice if Tk is missing."""
+    try:
+        from ui.desktop import JarvisApp
+    except Exception as exc:  # noqa: BLE001 - tkinter unavailable on a minimal Python
+        print(f"\n[!] Graphical UI not available ({exc}). Falling back to voice mode.\n")
+        brain.run_voice_mode()
+        return
+    JarvisApp(brain).run()
 
 
 if __name__ == "__main__":

@@ -108,6 +108,7 @@ GEMINI_MODEL=gemini-2.0-flash
 ```powershell
 python main.py            # voice mode (microphone required)
 python main.py --text     # text mode — chat in the terminal, no microphone
+python main.py --gui      # floating on-screen assistant window (typing + optional voice)
 python main.py --debug    # verbose logging
 python main.py --no-speak # silence TTS
 ```
@@ -129,6 +130,27 @@ Jarvis: Good evening. JARVIS ONLINE. How can I help?
 
 In text mode you type `You > ...`; JARVIS replies and speaks it. Say
 `exit jarvis` to quit, `cancel` to drop a pending action.
+
+### The desktop window (`--gui`)
+
+`python main.py --gui` opens a small, always-on-top overlay that lives on your
+screen while you talk to it. It reuses the same `Brain`, tools, safety gate and
+TTS as text/voice mode — the window is only a view controller.
+
+- **Animated core orb** — its color and motion reflect the live state:
+  blue *Standby*, green *Listening…*, amber *Thinking…* (orbiting nodes),
+  cyan *Speaking…* (audio bars).
+- **Live transcript** — every "You" and "Jarvis" line, including confirmations
+  and errors, scrolled automatically.
+- **Type or speak** — use the text box (Enter or **Send**), or click **🎙 Mic**
+  for hands-free voice. The mic is lazy-loaded, so text-only use never needs
+  Whisper/numpy; if no microphone is present the button just reports that.
+- **Close** — the ✕ button, `Esc`, or saying `exit jarvis` shuts JARVIS down
+  cleanly (memory, TTS and the browser session are released).
+
+Threading: Gemini calls and text-to-speech run on a worker thread, and all
+window updates are marshalled through a UI queue onto Tk's main loop, so the
+window never freezes and Tkinter's single-thread rule is respected.
 
 ## 7. Microphone / voice configuration
 

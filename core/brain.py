@@ -6,6 +6,8 @@ interactive text mode and a continuous voice mode.
 """
 from __future__ import annotations
 
+from typing import Callable
+
 from config.settings import Settings, validate_settings
 from ai.gemini_client import GeminiClient
 from core.agent import Agent
@@ -34,6 +36,17 @@ class Brain:
         self.agent = Agent(settings, self.client, self.registry, self.memory)
         self.tts: TextToSpeech = make_tts(settings)
         self.token = CancellationToken()
+        # Optional observer used by the graphical UI: called with small dicts
+        # describing state/text so a front-end can animate and transcribe.
+        self.on_event: Callable[[dict], None] | None = None
+
+    def _emit(self, event: dict) -> None:
+        callback = self.on_event
+        if callback:
+            try:
+                callback(event)
+            except Exception:  # noqa: BLE001 - a UI glitch must never break the assistant
+                logger.debug("on_event callback raised", exc_info=True)
 
     # --- startup ------------------------------------------------------------
     def startup_checks(self) -> list[tuple[str, bool]]:
@@ -53,6 +66,10 @@ class Brain:
         name = self.settings.assistant_name
         return f"{greeting}. {name.upper()} online. How can I help?"
 
+    def announce(self, text: str, speak: bool = True) -> None:
+        """Emit/print/speak a line that is not in reply to user input (greetings)."""
+        self._respond(text, speak)
+
     # --- core interaction ---------------------------------------------------
     def speak(self, text: str) -> None:
         try:
@@ -60,38 +77,39 @@ class Brain:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Speak failed: %s", exc)
 
+    def _respond(self, reply: str, speak: bool) -> None:
+        """Print, emit and optionally speak one assistant reply."""
+        print(f"{self.settings.assistant_name}: {reply}")
+        self._emit({"type": "reply", "text": reply})
+        if speak:
+            self._emit({"type": "state", "state": "speaking"})
+            self.speak(reply)
+        self._emit({"type": "state", "state": "idle"})
+
     def process(self, text: str, speak: bool = True) -> tuple[str, bool]:
         """Handle one utterance. Returns (reply, keep_going)."""
         stripped = (text or "").strip()
         lowered = stripped.lower()
+        if stripped:
+            self._emit({"type": "user", "text": stripped})
 
         if lowered in _EXIT:
-            reply = "Goodbye. Shutting down."
-            print(f"{self.settings.assistant_name}: {reply}")
-            if speak:
-                self.speak(reply)
-            return reply, False
+            self._respond("Goodbye. Shutting down.", speak)
+            return "Goodbye. Shutting down.", False
 
         if lowered in _CANCEL:
             self.agent.cancel()
-            reply = "Cancelled."
-            print(f"{self.settings.assistant_name}: {reply}")
-            if speak:
-                self.speak(reply)
-            return reply, True
+            self._respond("Cancelled.", speak)
+            return "Cancelled.", True
 
         if lowered in _STATUS:
-            task = self.agent.task
-            reply = self._status_text(task)
-            print(f"{self.settings.assistant_name}: {reply}")
-            if speak:
-                self.speak(reply)
+            reply = self._status_text(self.agent.task)
+            self._respond(reply, speak)
             return reply, True
 
+        self._emit({"type": "state", "state": "thinking"})
         result = self.agent.handle_text(stripped, self.token)
-        print(f"{self.settings.assistant_name}: {result.text}")
-        if speak:
-            self.speak(result.text)
+        self._respond(result.text, speak)
         return result.text, True
 
     def _status_text(self, task) -> str:
@@ -123,8 +141,7 @@ class Brain:
         self.close()
 
     def _print_and_speak(self, text: str) -> None:
-        print(f"{self.settings.assistant_name}: {text}")
-        self.speak(text)
+        self._respond(text, speak=True)
 
     def run_voice_mode(self) -> None:
         from voice.listener import VoiceListener

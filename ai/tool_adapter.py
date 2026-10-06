@@ -52,15 +52,28 @@ def build_tools(schemas: list[dict[str, Any]]) -> list[types.Tool]:
 
 def _part_from_chat_part(part: ChatPart) -> types.Part:
     if part.function_call is not None:
-        return types.Part(function_call=types.FunctionCall(
-            name=part.function_call["name"],
-            args=part.function_call.get("args", {}),
-        ))
+        call = part.function_call
+        fc_kwargs: dict[str, Any] = {
+            "name": call["name"],
+            "args": call.get("args", {}) or {},
+        }
+        if call.get("id"):
+            fc_kwargs["id"] = call["id"]
+        part_kwargs: dict[str, Any] = {"function_call": types.FunctionCall(**fc_kwargs)}
+        # Echo the model's thought_signature back verbatim or tools 400 (see
+        # https://ai.google.dev/gemini-api/docs/thought-signatures).
+        if call.get("thought_signature") is not None:
+            part_kwargs["thought_signature"] = call["thought_signature"]
+        return types.Part(**part_kwargs)
     if part.function_response is not None:
-        return types.Part(function_response=types.FunctionResponse(
-            name=part.function_response["name"],
-            response=part.function_response.get("response", {}),
-        ))
+        resp = part.function_response
+        fr_kwargs: dict[str, Any] = {
+            "name": resp["name"],
+            "response": resp.get("response", {}) or {},
+        }
+        if resp.get("id"):
+            fr_kwargs["id"] = resp["id"]
+        return types.Part(function_response=types.FunctionResponse(**fr_kwargs))
     return types.Part.from_text(text=part.text or "")
 
 
