@@ -210,7 +210,7 @@ All voice knobs live in `.env`.
 | `STT_BACKEND` | `local` (faster-whisper) or `recognition` (Google Web Speech) | `local` |
 | `STT_MODEL` | Whisper size: `tiny`, `base.en`, `small`, `medium`, `large-v3` | `base.en` |
 | `STT_COMPUTE_TYPE` | Whisper compute mode, for example `int8` or `float16` | `int8` |
-| `SILENCE_THRESHOLD` | RMS level that counts as speech; raise it in noisy rooms | `0.5` |
+| `SILENCE_THRESHOLD` | Floor for speech detection; the VAD actually triggers at `max(this, 5 x measured noise floor)`. Raise it only if fan noise wakes the assistant. | `0.004` |
 | `END_SILENCE_DURATION` | Seconds of silence that end an utterance | `0.8` |
 | `MAX_RECORDING_DURATION` | Hard cap per utterance, in seconds | `20.0` |
 | `MIN_RECORDING_DURATION` | Shortest utterance accepted as speech | `0.4` |
@@ -369,6 +369,7 @@ The agent is tested against a fake Gemini client, so no test consumes API quota.
 | Whisper slow or model download blocked | Use `STT_MODEL=tiny` or `STT_BACKEND=recognition`. The first run downloads the model. |
 | No sound from speech | `edge-tts` needs internet. Try `TTS_ENGINE=pyttsx3` for offline, or `--no-speak`. |
 | `Microphone not available` | Check Windows Sound settings → Input, and confirm no other app holds exclusive access. Text mode still works. |
+| It never hears me | Run with `--debug`. The log prints the measured noise floor and speech threshold, and warns after 5 silent seconds. If the threshold is far above your loudest block, the problem is Windows input volume or mic privacy access, not JARVIS. The VAD adapts to your mic, so do not raise `SILENCE_THRESHOLD` to fix this. |
 | `APPLICATION_NOT_FOUND` | The app is not discoverable. Add its path to `config/app_aliases.json`. |
 | App opens the wrong thing or fails with a split path | Update to the current `tools/applications.py`; spaced install paths such as `C:\Program Files\...` are passed as their own argument, not into a shell string. |
 
