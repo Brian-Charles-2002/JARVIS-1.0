@@ -70,6 +70,11 @@ SPEECH-TO-TEXT ──► GEMINI (intent) ──► respond or use a tool
                               FINAL RESPONSE ──► TEXT-TO-SPEECH ──► LISTEN
 ```
 
+Speech is streamed. Each sentence is synthesized and played while Gemini is
+still writing the answer, so a long reply starts out loud part-way through
+instead of after the last token. Playback still blocks the microphone, so
+JARVIS never hears itself.
+
 ### Module map
 
 | Area | Path | Responsibility |
@@ -210,6 +215,7 @@ All voice knobs live in `.env`.
 | `STT_BACKEND` | `local` (faster-whisper) or `recognition` (Google Web Speech) | `local` |
 | `STT_MODEL` | Whisper size: `tiny`, `base.en`, `small`, `medium`, `large-v3` | `base.en` |
 | `STT_COMPUTE_TYPE` | Whisper compute mode, for example `int8` or `float16` | `int8` |
+| `STT_BEAM_SIZE` | Whisper search width. `1` is greedy and answers fastest; raise it for accuracy over speed. | `1` |
 | `SILENCE_THRESHOLD` | Floor for speech detection; the VAD actually triggers at `max(this, 5 x measured noise floor)`. Raise it only if fan noise wakes the assistant. | `0.004` |
 | `END_SILENCE_DURATION` | Seconds of silence that end an utterance | `0.8` |
 | `MAX_RECORDING_DURATION` | Hard cap per utterance, in seconds | `20.0` |

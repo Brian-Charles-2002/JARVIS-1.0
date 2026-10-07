@@ -75,6 +75,9 @@ class Settings:
     stt_backend: str = "local"
     stt_model: str = "base.en"
     stt_compute_type: str = "int8"
+    # Beam search width. Greedy (1) measured ~11% faster than the default 5 on
+    # short utterances, which is the difference that makes voice feel conversational.
+    stt_beam_size: int = 1
 
     # vad / speech detection
     # SILENCE_THRESHOLD is a floor: the VAD triggers above it, or above 5x the
@@ -142,6 +145,7 @@ def load_settings(env_file: str | os.PathLike[str] | None = None) -> Settings:
         stt_backend=_get_str("STT_BACKEND", "local"),
         stt_model=_get_str("STT_MODEL", "base.en"),
         stt_compute_type=_get_str("STT_COMPUTE_TYPE", "int8"),
+        stt_beam_size=_get_int("STT_BEAM_SIZE", 1),
         silence_threshold=_get_float("SILENCE_THRESHOLD", 0.004),
         end_silence_duration=_get_float("END_SILENCE_DURATION", 0.8),
         max_recording_duration=_get_float("MAX_RECORDING_DURATION", 20.0),

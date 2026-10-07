@@ -8,18 +8,24 @@ from tools import build_registry
 
 
 class FakeClient:
-    def __init__(self, responses):
+    """Scripts ModelResponse turns; optionally splits them into streaming deltas."""
+
+    def __init__(self, responses, deltas=None):
         self.queue = list(responses)
+        self.deltas = deltas or {}
         self.calls = []
 
-    def respond(self, contents, tools, system=None):
+    def respond_stream(self, contents, tools, system=None):
         self.calls.append(len(contents))
         assert self.queue, "FakeClient ran out of scripted responses"
-        return self.queue.pop(0)
+        final = self.queue.pop(0)
+        for piece in self.deltas.get(final.text, []):
+            yield "delta", piece
+        yield "final", final
 
 
-def make_agent(settings, responses):
-    client = FakeClient(responses)
+def make_agent(settings, responses, deltas=None):
+    client = FakeClient(responses, deltas)
     memory = MemoryManager(settings)
     registry = build_registry(settings)
     agent = Agent(settings, client, registry, memory)
@@ -75,3 +81,32 @@ def test_destructive_confirmation_declined(settings, tmp_path: Path):
     result = agent.handle_text("no")
     assert result.text == "Okay, I left it alone."
     assert keep.exists()
+
+
+def test_streamed_deltas_reach_callback_in_order(settings):
+    reply = "Sure. Here is the time. It is late."
+    agent, _, _ = make_agent(
+        settings,
+        [ModelResponse(kind="text", text=reply)],
+        deltas={reply: ["Sure. Here", " is the time", ". It is late."]},
+    )
+    heard: list[str] = []
+    result = agent.handle_text("what time is it", on_chunk=heard.append)
+    assert "".join(heard) == reply
+    assert result.text == reply
+
+
+def test_deltas_stop_at_the_permission_gate(settings):
+    """A turn that proposes an action must not have spoken anything yet."""
+    agent, _, _ = make_agent(settings, [])
+    spoken: list[str] = []
+
+    def silent_stream(contents, tools, system=None):
+        yield "final", ModelResponse(kind="function_calls", function_calls=[
+            {"name": "delete_file", "args": {"path": "x.txt"}}
+        ])
+
+    agent.client.respond_stream = silent_stream
+    result = agent.handle_text("delete x.txt", on_chunk=spoken.append)
+    assert result.awaiting_confirmation is True
+    assert spoken == []

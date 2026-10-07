@@ -28,6 +28,11 @@ class RedactingFormatter(logging.Formatter):
 def setup_logging(log_dir: Path, level: str = "INFO", debug: bool = False) -> logging.Logger:
     """Configure the root ``jarvis`` logger. Safe to call once at startup."""
     log_dir.mkdir(parents=True, exist_ok=True)
+    # The SDK logs an advisory "AFC is not recommended" warning on every first
+    # call; JARVIS drives function calls manually, so it is noise on the console.
+    # Its loggers use the underscored namespace, but cover both spellings.
+    for noisy in ("google_genai", "google.genai"):
+        logging.getLogger(noisy).setLevel(logging.ERROR)
     logger = logging.getLogger("jarvis")
     if getattr(logger, "_jarvis_configured", False):
         return logger

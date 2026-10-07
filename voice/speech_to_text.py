@@ -55,7 +55,12 @@ class WhisperSTT(SpeechToText):
             audio = np.asarray(audio, dtype=np.float32)
             if sample_rate != 16000:
                 audio = _resample(audio, sample_rate, 16000)
-            segments, _ = model.transcribe(audio, language=None, vad_filter=True)
+            segments, _ = model.transcribe(
+                audio,
+                language=None,
+                vad_filter=True,
+                beam_size=max(1, int(self.settings.stt_beam_size)),
+            )
             return " ".join(seg.text.strip() for seg in segments).strip()
 
 

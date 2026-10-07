@@ -9,7 +9,7 @@ import time
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from google import genai
 from google.genai import types
@@ -59,53 +59,109 @@ class GeminiClient:
         sdk_contents = to_contents(contents)
         return self._call_with_retry(sdk_contents, config)
 
-    def _call_with_retry(self, sdk_contents, config) -> types.GenerateContentResponse:
+    def _retry_or_raise(self, exc: Exception, attempt: int, attempts: int,
+                        delay: float) -> float:
+        """Map an SDK error to a project error, or return a backoff to retry."""
+        raw_code = getattr(exc, "code", None)
+        try:
+            code = int(raw_code) if raw_code is not None else None
+        except (TypeError, ValueError):
+            code = None
+        message = str(exc)
+        lowered = message.lower()
+        is_auth = (
+            code in (401, 403)
+            or (code == 400 and ("api key" in lowered or "api_key" in lowered
+                                 or "permission" in lowered or "authenticat" in lowered))
+        )
+        if is_auth:
+            raise AuthenticationError(f"Gemini rejected the API key: {_short(message)}") from exc
+        will_retry = attempt < attempts - 1
+        if code == 429 or "rate limit" in lowered or "quota" in lowered:
+            if will_retry:
+                logger.warning("Rate limited; backing off %.1fs", delay)
+                return delay
+            raise RateLimitError(f"Gemini rate limit exceeded: {_short(message)}") from exc
+        if (code in _RETRYABLE_CODES or "timeout" in lowered
+                or "unavailable" in lowered or "connection" in lowered) and will_retry:
+            return delay
+        raise AIError(f"Gemini request failed: {_short(message)}") from exc
+
+    def _attempt(self, invoke, what: str):
+        """Call ``invoke`` with bounded exponential backoff on transient errors."""
         last_error: Exception | None = None
         attempts = 4
         delay = 1.0
         for attempt in range(attempts):
             try:
-                return self._client.models.generate_content(
-                    model=self._model, contents=sdk_contents, config=config
-                )
+                return invoke()
             except Exception as exc:  # noqa: BLE001 - classify SDK errors
                 last_error = exc
-                raw_code = getattr(exc, "code", None)
-                try:
-                    code = int(raw_code) if raw_code is not None else None
-                except (TypeError, ValueError):
-                    code = None
-                message = str(exc)
-                lowered = message.lower()
-                is_auth = (
-                    code in (401, 403)
-                    or (code == 400 and ("api key" in lowered or "api_key" in lowered
-                                         or "permission" in lowered or "authenticat" in lowered))
-                )
-                if is_auth:
-                    raise AuthenticationError(f"Gemini rejected the API key: {_short(message)}") from exc
-                if code == 429 or "rate limit" in lowered or "quota" in lowered:
-                    if attempt < attempts - 1:
-                        logger.warning("Rate limited; backing off %.1fs", delay)
-                        time.sleep(delay)
-                        delay *= 2
-                        continue
-                    raise RateLimitError(f"Gemini rate limit exceeded: {_short(message)}") from exc
-                if code in _RETRYABLE_CODES or "timeout" in lowered or "unavailable" in lowered or "connection" in lowered:
-                    if attempt < attempts - 1:
-                        time.sleep(delay)
-                        delay *= 2
-                        continue
-                raise AIError(f"Gemini request failed: {_short(message)}") from exc
-        raise AIError(f"Gemini request failed after retries: {_short(str(last_error))}")
+                wait = self._retry_or_raise(exc, attempt, attempts, delay)
+                time.sleep(wait)
+                delay *= 2
+        raise AIError(f"{what} failed after retries: {_short(str(last_error))}")
+
+    def _call_with_retry(self, sdk_contents, config) -> types.GenerateContentResponse:
+        return self._attempt(
+            lambda: self._client.models.generate_content(
+                model=self._model, contents=sdk_contents, config=config
+            ),
+            "Gemini request",
+        )
+
+    def _open_stream(self, sdk_contents, config):
+        """Open the streaming iterator; only establishing it is retried."""
+        return self._attempt(
+            lambda: iter(self._client.models.generate_content_stream(
+                model=self._model, contents=sdk_contents, config=config
+            )),
+            "Gemini stream",
+        )
 
     # --- public API ---------------------------------------------------------
-    def respond(self, contents: list[ChatMessage], tools: list[dict[str, Any]] | None,
-                system: str | None = None) -> ModelResponse:
-        """Send the conversation + tool schemas and return text or function calls."""
+    def respond_stream(self, contents: list[ChatMessage], tools: list[dict[str, Any]] | None,
+                       system: str | None = None) -> Iterator[tuple[str, Any]]:
+        """Stream one turn: ``("delta", str)`` chunks, then one ``("final", ModelResponse)``.
+
+        Deltas stop the moment the turn reveals a function call, so a proposed
+        action is never spoken aloud before the local permission gate has run.
+        """
         system = system or system_instruction(self.settings.assistant_name)
-        response = self._generate(contents, tools, system)
-        return _parse_response(response)
+        config_kwargs: dict[str, Any] = {
+            "system_instruction": system,
+            "temperature": 0.6,
+        }
+        if tools:
+            config_kwargs["tools"] = build_tools(tools)
+        stream = self._open_stream(to_contents(contents), types.GenerateContentConfig(**config_kwargs))
+
+        texts: list[str] = []
+        calls: list[dict[str, Any]] = []
+        speaking = True
+        for chunk in stream:
+            candidate = chunk.candidates[0] if chunk.candidates else None
+            if candidate is None or candidate.content is None:
+                continue
+            for part in candidate.content.parts or []:
+                fc = getattr(part, "function_call", None)
+                if fc is not None:
+                    speaking = False
+                    call: dict[str, Any] = {"name": fc.name, "args": dict(fc.args or {}), "id": fc.id}
+                    signature = getattr(part, "thought_signature", None)
+                    if signature is not None:
+                        call["thought_signature"] = signature
+                    calls.append(call)
+                    continue
+                text = getattr(part, "text", None)
+                if not text:
+                    continue
+                texts.append(text)
+                if speaking:
+                    yield "delta", text
+
+        kind = "function_calls" if calls else "text"
+        yield "final", ModelResponse(kind=kind, text="".join(texts).strip(), function_calls=calls)
 
     def summarize(self, text: str) -> str:
         """Summarize older conversation content into a compact note."""

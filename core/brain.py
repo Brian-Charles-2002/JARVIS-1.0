@@ -56,6 +56,9 @@ class Brain:
         checks.append(("Gemini connected", self.client.health_check()))
         checks.append(("Tool registry loaded", len(self.registry.names) > 0))
         checks.append(("Text-to-speech ready", self.settings.tts_engine != "none"))
+        # Pay the edge-tts handshake here so the greeting is the first thing the
+        # user hears, not a half-second of silence.
+        self.tts.warmup()
         return checks
 
     def greeting(self) -> str:
@@ -77,13 +80,24 @@ class Brain:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Speak failed: %s", exc)
 
-    def _respond(self, reply: str, speak: bool) -> None:
-        """Print, emit and optionally speak one assistant reply."""
+    def _respond(self, reply: str, speak: bool, stream=None) -> None:
+        """Print, emit and optionally speak one assistant reply.
+
+        ``stream`` is a live SpeechStream that already spoke sentences during
+        generation; finish() blocks until playback drains, keeping the
+        microphone closed while JARVIS talks. Locally-generated replies (which
+        never reach the stream) fall back to a plain speak().
+        """
         print(f"{self.settings.assistant_name}: {reply}")
         self._emit({"type": "reply", "text": reply})
         if speak:
             self._emit({"type": "state", "state": "speaking"})
-            self.speak(reply)
+            if stream is not None:
+                stream.finish()
+                if not stream.spoke:
+                    self.speak(reply)
+            else:
+                self.speak(reply)
         self._emit({"type": "state", "state": "idle"})
 
     def process(self, text: str, speak: bool = True) -> tuple[str, bool]:
@@ -108,8 +122,22 @@ class Brain:
             return reply, True
 
         self._emit({"type": "state", "state": "thinking"})
-        result = self.agent.handle_text(stripped, self.token)
-        self._respond(result.text, speak)
+        stream = None
+        on_chunk = None
+        if speak:
+            stream = self.tts.begin_stream()
+            announced: list[bool] = []
+
+            def on_chunk(delta: str) -> None:
+                # Speech can start before the reply is finished, so the UI has to
+                # leave "thinking" when the first sentence goes out.
+                if not announced:
+                    announced.append(True)
+                    self._emit({"type": "state", "state": "speaking"})
+                stream.feed(delta)
+
+        result = self.agent.handle_text(stripped, self.token, on_chunk=on_chunk)
+        self._respond(result.text, speak, stream)
         return result.text, True
 
     def _status_text(self, task) -> str:

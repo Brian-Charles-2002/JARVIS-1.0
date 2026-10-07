@@ -9,12 +9,14 @@ anything directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 from config.settings import Settings
 from ai.gemini_client import GeminiClient
 from core.conversation import ChatMessage, ChatPart, Conversation
 from core.context import ContextManager
 from core.events import CancellationToken, TaskCancelled
+from core.exceptions import AIError
 from core.executor import ToolExecutor
 from core.logging_setup import get_logger
 from core.memory import MemoryManager
@@ -55,7 +57,8 @@ class Agent:
         self._pending_calls: list[dict] | None = None
 
     # --- public -------------------------------------------------------------
-    def handle_text(self, user_text: str, token: CancellationToken | None = None) -> AgentResult:
+    def handle_text(self, user_text: str, token: CancellationToken | None = None,
+                    on_chunk: Callable[[str], None] | None = None) -> AgentResult:
         token = token or CancellationToken()
         user_text = (user_text or "").strip()
         if not user_text:
@@ -67,11 +70,11 @@ class Agent:
             if decision == "yes":
                 self._commit_calls(self._pending_calls, cancelled=False, token=token)
                 self._pending_calls = None
-                return self._run_loop(token)
+                return self._run_loop(token, on_chunk)
             if decision == "no":
                 self._commit_calls(self._pending_calls, cancelled=True, token=token)
                 self._pending_calls = None
-                return self._run_loop(token)
+                return self._run_loop(token, on_chunk)
             # changed the subject -> abandon the pending batch, then treat as new
             self._commit_calls(self._pending_calls, cancelled=True, token=token)
             self._pending_calls = None
@@ -81,7 +84,7 @@ class Agent:
         self.context.keep_recent(self.conversation)
         self.task = self.planner.new_task(user_text)
         self.memory.short_term.current_task = user_text
-        return self._run_loop(token)
+        return self._run_loop(token, on_chunk)
 
     def cancel(self) -> None:
         self._pending_calls = None
@@ -98,7 +101,22 @@ class Agent:
             parts.append(f"[EARLIER CONTEXT]\n{self.conversation.summary}")
         return "\n\n".join(parts)
 
-    def _run_loop(self, token: CancellationToken) -> AgentResult:
+    @staticmethod
+    def _consume_stream(stream, on_chunk: Callable[[str], None] | None):
+        """Drain a respond_stream, forwarding spoken deltas; returns the final response."""
+        final = None
+        for kind, payload in stream:
+            if kind == "delta":
+                if on_chunk is not None:
+                    on_chunk(payload)
+            else:
+                final = payload
+        if final is None:
+            raise AIError("Gemini stream ended without a final response")
+        return final
+
+    def _run_loop(self, token: CancellationToken,
+                  on_chunk: Callable[[str], None] | None = None) -> AgentResult:
         schemas = self.registry.schemas()
         for _ in range(MAX_ITERATIONS):
             try:
@@ -109,8 +127,11 @@ class Agent:
                 return AgentResult("Cancelled.", cancelled=True)
 
             try:
-                response = self.client.respond(
-                    self.conversation.messages, schemas, self._system_instruction()
+                response = self._consume_stream(
+                    self.client.respond_stream(
+                        self.conversation.messages, schemas, self._system_instruction()
+                    ),
+                    on_chunk,
                 )
             except TaskCancelled:
                 raise
